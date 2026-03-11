@@ -232,6 +232,7 @@ export interface EnvironmentConfig {
   kmsServerURL: string;
   userApiServerURL: string;
   defaultRPCURL: string;
+  usdcCreditsAddress?: Address;
 }
 
 export interface Release {
