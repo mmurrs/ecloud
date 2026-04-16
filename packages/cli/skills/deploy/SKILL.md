@@ -20,7 +20,7 @@ You are deploying to EigenCloud TEE (Trusted Execution Environment) infrastructu
 
 1. **All images must be `linux/amd64`.** TEEs run on Intel TDX. An arm64 image will deploy successfully but crash at runtime with no useful error. On Apple Silicon: always `docker buildx build --platform linux/amd64`.
 
-2. **Always use hex app IDs (0x...), never display names.** Name lookup is profile-based and silently fails on some commands (confirmed: `app info` by name returns `not found` while the same app works fine by ID).
+2. **Prefer hex app IDs (0x...) over display names.** Name lookup uses a local cache that can be stale. If a name lookup fails, the CLI now suggests running `ecloud compute app list` to refresh the cache or using the app ID directly. Hex IDs are always reliable.
 
 3. **The CLI returns exit 1 for all errors.** There are no granular exit codes. Parse stdout/stderr content to determine what went wrong.
 
@@ -30,7 +30,9 @@ You are deploying to EigenCloud TEE (Trusted Execution Environment) infrastructu
 
 6. **`--json` is only available on:** `app releases`, `build submit`, `build status`, `build info`, `build list`, `build verify`. It is NOT available on: `app list`, `app info`, `app deploy`, `billing status`. Do not pass `--json` to commands that don't support it.
 
-7. **No `--dry-run` exists** anywhere in the CLI. No `--yes` on deploy/upgrade (they don't prompt interactively). `--force` only exists on: `app terminate`, `billing cancel`, `auth logout`.
+7. **No `--dry-run` exists** anywhere in the CLI. `--force` exists on: `app deploy`, `app upgrade`, `app terminate`, `billing cancel`, `auth logout` — but on deploy/upgrade it only skips the mainnet confirmation prompt, not all prompts.
+
+8. **Non-interactive / CI/CD mode:** The CLI detects non-TTY environments and throws clear errors naming the missing flag instead of hanging on prompts. To run deploy/upgrade fully non-interactively, provide ALL flags explicitly — especially `--image-ref` (or `--dockerfile`), `--name`, `--instance-type`, `--log-visibility`, `--resource-usage-monitoring`, `--env-file`, and `--skip-profile`. Missing any of these in a non-TTY environment will exit with an actionable error.
 
 ## Current environment
 
@@ -168,9 +170,12 @@ ecloud compute app deploy \
   --instance-type g1-standard-4t \
   --env-file .env \
   --log-visibility public \
+  --resource-usage-monitoring enable \
   --skip-profile \
   --verbose
 ```
+
+This command includes all flags needed for fully non-interactive execution (CI/agents). Omitting any of these in a non-TTY environment will produce a clear error naming the missing flag.
 
 On success, stdout contains the app ID (`0x` followed by 40 hex chars) and a dashboard URL. **Save the app ID** — all subsequent commands need it.
 
@@ -321,6 +326,15 @@ ecloud compute app upgrade <app-id> \
   --verbose
 ```
 
+To rename the app during upgrade:
+```bash
+ecloud compute app upgrade <app-id> \
+  --image-ref <registry>/<image>:<new-tag> \
+  --name "NewAppName" \
+  --env-file .env \
+  --verbose
+```
+
 For verifiable upgrade:
 ```bash
 ecloud compute app upgrade <app-id> \
@@ -330,7 +344,7 @@ ecloud compute app upgrade <app-id> \
   --verbose
 ```
 
-After upgrade, re-run Gate 3 (poll `app info` until `Running`, then health check).
+After upgrade, re-run Gate 3 (poll `app info` until `Running`, then health check). **Note:** The CLI reports success when the container starts — this does not guarantee the app is serving traffic. Always verify with a health check.
 
 App ID and derived keys persist across upgrades.
 
@@ -383,7 +397,7 @@ ecloud compute app info <app-id> --address-count 5  # show more derived addresse
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `App name 'X' not found` | Name lookup is profile-based, unreliable | Use hex app ID (0x...) |
+| `App name 'X' not found` | Name cache is stale | Run `ecloud compute app list` to refresh, or use hex app ID (0x...) |
 | `subscription not active` | No billing subscription | `ecloud billing subscribe` |
 | `insufficient credits` | USDC balance depleted | `ecloud billing top-up --amount <N>` |
 | Image pull failure | Image not public or wrong architecture | `docker manifest inspect <ref>` — verify `linux/amd64` |
@@ -393,7 +407,8 @@ ecloud compute app info <app-id> --address-count 5  # show more derived addresse
 | Auth errors | Key not in keyring or expired | `ecloud auth whoami` to diagnose → `ecloud auth login` to fix |
 | Wrong environment | Deployed to sepolia instead of mainnet (or vice versa) | `ecloud compute env show` → `ecloud compute env set <env> --yes` |
 | Logs return 425 error | Normal during provisioning (1-2+ min after deploy) | Wait and retry, or use `--watch` to stream when available |
-| App shows "(unnamed)" on dashboard | `--name` only sets CLI name, not dashboard profile | `ecloud compute app profile set <app-id> --name "Name"` |
+| App shows "(unnamed)" on dashboard | `--name` only sets CLI name, not dashboard profile | `ecloud compute app profile set <app-id> --name "Name"` (or use `--name` on next `upgrade`) |
+| `Cannot prompt in non-interactive mode` | Running in CI/agent without all required flags | Error message names the missing flag — add it and retry |
 | Profile name rejected | Spaces not allowed in profile names | Use hyphens or camelCase |
 | Mainnet app unreachable despite "Running" status | Mainnet networking can take 5+ min after deploy (longer than sepolia) | Keep polling — sepolia ~30s, mainnet can be several minutes |
 
